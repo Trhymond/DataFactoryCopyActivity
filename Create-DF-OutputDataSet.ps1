@@ -7,7 +7,7 @@
 
 .PARAMETER 
 	TableName 
-	LinkedServiceName
+	DatabaseName
 
 .EXAMPLE
 	 & ".\Create-DF-OutputDataSet.ps1" -TableName "DimPort" -LinkedServiceName "ISS_DW" 
@@ -18,8 +18,10 @@
 
 Param
 (
+    [Parameter(Mandatory=$True)][String] $ServerName,
     [Parameter(Mandatory=$True)][String] $TableName,
-    [Parameter(Mandatory=$True)][String] $LinkedServiceName
+    [Parameter(Mandatory=$True)][String] $DatabaseName,
+    [Parameter(Mandatory=$False)][String] $UserName
 )
 
 . "$PSScriptRoot\Sql-Commands.ps1"
@@ -41,17 +43,7 @@ if(!(Test-Path -Path $outputPath))
      New-Item -ItemType directory -Path $outputPath
 }
 
-
-<# This method will not work on Azure Sql Databases #> 
- <#
-$columnNames = dir 'SQLSERVER:\SQL\RHYMOND-01\DEFAULT\Databases\ISS_DW\Tables' | 
-    Where-Object {$_.DisplayName -match "dbo."+$TableName} | 
-        ForEach-Object {$_.Columns} |
-            Select-Object Name, DataType
-#>
-
-$columnNames = (Get-TableColumns -Database "ISS_DW" -TableName $TableName)
-
+$columnNames = (Get-TableColumns -Server $ServerName -Database $DatabaseName -TableName $DestTableName -UserName $UserName)
 $columnNames | ForEach {
     
     $field = New-Object -TypeName PSObject
@@ -69,14 +61,14 @@ $availability | Add-Member -MemberType NoteProperty -Name "interval" -Value  1
 $properties | Add-Member -MemberType NoteProperty -Name "structure" -Value @($fields)
 $properties | Add-Member -MemberType NoteProperty -Name "published" -Value "false"
 $properties | Add-Member -MemberType NoteProperty -Name "type" -Value "AzureSqlTable"
-$properties | Add-Member -MemberType NoteProperty -Name "linkedServiceName" -Value $LinkedServiceName
+$properties | Add-Member -MemberType NoteProperty -Name "linkedServiceName" -Value $DatabaseName
 $properties | Add-Member -MemberType NoteProperty -Name "typeProperties" -Value  $typeProperties
 $properties | Add-Member -MemberType NoteProperty -Name "availability" -Value $availability
 $properties | Add-Member -MemberType NoteProperty -Name "external" -Value false
 $properties | Add-Member -MemberType NoteProperty -Name "policy" -Value  $policy
 
 
-$input | Add-Member -MemberType NoteProperty -Name "name" -Value ("OutputDatasets-e7f-"+$TableName)
+$input | Add-Member -MemberType NoteProperty -Name "name" -Value ("OutputDatasets-"+$TableName)
 $input | Add-Member -MemberType NoteProperty -Name "properties" -Value $properties
 
 $result = ConvertTo-Json $input -Depth 5

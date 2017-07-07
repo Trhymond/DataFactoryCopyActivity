@@ -6,11 +6,11 @@
 	Create Data Factory Pipeline Input Dataset Json from Database Table 
 
 .PARAMETER 
+    DatabaseName
 	TableName 
-	LinkedServiceName
 
 .EXAMPLE
-	 & ".\Create-DF-InputDataSet.ps1" -TableName "IMOS_Port" -LinkedServiceName "IMOS_Reporting_Extract" 
+	 & ".\Create-DF-InputDataSet.ps1" -ServerName "" -DatabaseName "Reporting_Extract" -TableName "IMOS_Port"
 
 .NOTE
 	Enter the database password when prompted
@@ -18,8 +18,10 @@
 
 Param
 (
+    [Parameter(Mandatory=$True)][String] $ServerName,
+    [Parameter(Mandatory=$True)][String] $DatabaseName,
     [Parameter(Mandatory=$True)][String] $TableName,
-    [Parameter(Mandatory=$True)][String] $LinkedServiceName
+    [Parameter(Mandatory=$False)][String] $UserName    
 )
 
 . "$PSScriptRoot\Sql-Commands.ps1"
@@ -42,16 +44,9 @@ if(!(Test-Path -Path $outputPath))
      New-Item -ItemType directory -Path $outputPath
 }
 
-<# This method will not work on Azure Sql Databases #> 
- <#
-$columnNames = dir 'SQLSERVER:\SQL\RHYMOND-01\DEFAULT\Databases\IMOS_Reporting_Extract\Tables' | 
-    Where-Object {$_.DisplayName -match "dbo."+$TableName} | 
-        ForEach-Object {$_.Columns} |
-            Select-Object Name, DataType
-#>
 
 
-$columnNames = (Get-TableColumns -Database "IMOS_Reporting_Extract" -TableName $TableName)
+$columnNames = (Get-TableColumns -Server $ServerName -Database $DatabaseName -TableName $TableName -UserName $UserName)
 $columnNames | ForEach {
     
     $field = New-Object -TypeName PSObject
@@ -72,14 +67,14 @@ $availability | Add-Member -MemberType NoteProperty -Name "interval" -Value 1
 $properties | Add-Member -MemberType NoteProperty -Name "structure" -Value @($fields)
 $properties | Add-Member -MemberType NoteProperty -Name "published" -Value "false"
 $properties | Add-Member -MemberType NoteProperty -Name "type" -Value "AzureSqlTable"
-$properties | Add-Member -MemberType NoteProperty -Name "linkedServiceName" -Value $LinkedServiceName
+$properties | Add-Member -MemberType NoteProperty -Name "linkedServiceName" -Value $DatabaseName
 $properties | Add-Member -MemberType NoteProperty -Name "typeProperties" -Value  $typeProperties
 $properties | Add-Member -MemberType NoteProperty -Name "availability" -Value $availability
 $properties | Add-Member -MemberType NoteProperty -Name "external" -Value true
 $properties | Add-Member -MemberType NoteProperty -Name "policy" -Value  $policy
 
 
-$input | Add-Member -MemberType NoteProperty -Name "name" -Value ("InputDatasets-e7f-"+$TableName)
+$input | Add-Member -MemberType NoteProperty -Name "name" -Value ("InputDatasets-"+$TableName)
 $input | Add-Member -MemberType NoteProperty -Name "properties" -Value $properties
 
 $result = ConvertTo-Json $input -Depth 5
@@ -90,3 +85,6 @@ $json = [Newtonsoft.Json.Linq.JObject]::Parse($result);  # Required for Pretty p
 $fileName = "$outputPath\" +$TableName+".json"
 
 $json.ToString() | Out-File $fileName
+
+Create-UserDefinedType -Data $columnNames -Name $TableName -OutputPath $outputPath
+Create-MergeScript -Data $columnNames -KeyColumns @('SamAccountName') -SourceName $TableName -TargetName $TableName -OutputPath $outputPath

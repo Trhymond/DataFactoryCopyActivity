@@ -211,18 +211,25 @@ function Get-TableColumns
 {
    	[CmdletBinding()]
 	Param(
+        [Parameter(Mandatory=$True)][string]$Server,
         [Parameter(Mandatory=$True)][string]$Database,
-		[Parameter(Mandatory=$True)][string]$TableName
+		[Parameter(Mandatory=$True)][string]$TableName,
+        [Parameter(Mandatory=$False)][string]$UserName
 	)
 
+    #tcp:interlake-bi.database.secure.windows.net
     Set-Variable SqlConnection (New-Object System.Data.SqlClient.SqlConnection) -Scope Global -Option AllScope -Description "Global Variable for Sql Query functions"
  
     try
     { 
-        $password = Read-Password
-        Set-SqlConnection -ConnectionString "Server=tcp:interlake-bi.database.secure.windows.net;initial catalog=$Database;User ID=BIAdmin;Password=$password"
-        
-        $query = "SELECT COLUMN_NAME Name, DATA_TYPE DataType FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '$TableName' AND TABLE_SCHEMA='dbo'"
+        if($UserName) {
+            $password = Read-Password 
+        }
+
+        #Set-SqlConnection -ConnectionString "Server=$Server;initial catalog=$Database;User ID=$UserName;Password=$password"
+        Set-SqlConnection -ConnectionString "Server=$Server;initial catalog=$Database; Integrated Security=SSPI"
+
+        $query = "SELECT COLUMN_NAME Name, DATA_TYPE DataType, '[' + COLUMN_NAME + '] ' + (case when CHARACTER_MAXIMUM_LENGTH is null and  DATA_TYPE = 'decimal' then  '['+DATA_TYPE + '] (' + convert(varchar(5), NUMERIC_PRECISION) +', ' +  convert(varchar(5), NUMERIC_SCALE) + ')' when CHARACTER_MAXIMUM_LENGTH is null then '[' + DATA_TYPE + ']' 	when CHARACTER_MAXIMUM_LENGTH = -1 then '['+DATA_TYPE + '] (max)' else '['+DATA_TYPE + '] (' + convert(varchar(5), CHARACTER_MAXIMUM_LENGTH) + ')'  end) + ' ' + (case when IS_NULLABLE = 'NO' then 'NOT NULL' else 'NULL' end) [ColText] FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '$TableName' AND TABLE_SCHEMA='dbo'"
         $columnNames = (Execute-SqlQuery  -Query $query)
 
         return $columnNames
@@ -231,4 +238,153 @@ function Get-TableColumns
     {
          Close-SqlConnection 
     }
+}
+
+<#
+.SYNOPSIS
+	Create T-SQL Merge  script
+
+.DESCRIPTION
+	Create T-SQL Merge statement for the table
+
+.PARAMETER 
+	Data
+	KeyColumns
+    SourceName
+    TargetName
+    OutputPath
+
+.EXAMPLE
+	 Create-MergeScript -Data  -KeyColumns @("", "") -SourceName "" -TargetName "" -OutputPath ""
+#>
+
+function Create-MergeScript
+{
+   	[CmdletBinding()]
+	Param(
+        [Parameter(Mandatory=$True)][PSObject[]]$Data,
+        [Parameter(Mandatory=$True)][string[]]$KeyColumns,
+        [Parameter(Mandatory=$True)][string]$SourceName,
+        [Parameter(Mandatory=$True)][string]$TargetName,
+        [Parameter(Mandatory=$True)][string]$OutputPath
+	)
+
+    $first = $true
+    $comma = " "
+    $fieldList1 = ""
+    $fieldList2 = ""
+    $fieldList3 = ""
+    $fieldList_q = ""
+    
+    $sp = "CREATE Procedure [dbo].[Load$TableName]"+ "`r`n"
+    $sp += "(" +"`r`n"
+    $sp += "`t@$TableName $TableName" +"Data READONLY " + "`r`n" 
+    $sp += ")" + "`r`n"
+    $sp += "AS" + "`r`n"
+    $sp += "BEGIN" + "`r`n"
+    $sp += "`r`n"
+    $sp += "`tMERGE [dbo].[$TargetName] as target " + "`r`n"
+    $sp += "`t`tUSING (" + "`r`n"
+    $sp += "`t`t`t select " + "`r`n"
+
+    $Data | ForEach {
+        if($_.Name -ne $null -and $_.Name -ne "")
+        {
+            if($first -eq $false) {
+                $comma = ","
+            } 
+
+            $fieldList_q += "`t`t`t" + $comma + "["+$_.Name+"]" + "`r`n"
+            $fieldList_s += $comma + "["+$_.Name+"]" 
+            $fieldList_i += $comma + "source.["+$_.Name+"]" 
+            $fieldList_u += "`t`t`t " + $comma + "["+$_.Name+"] = source.["+$_.Name+"]" + "`r`n"
+            
+
+            $first = $false
+        }
+    }
+
+    $sp += $fieldList_q + "`r`n"
+    $sp += "`t`t`tfrom @$SourceName" + "`r`n"
+    $sp += "`t`t)" + "`r`n"
+    $sp += "`t`tAS source ($fieldList_s)" + "`r`n"
+    $sp += "`t`tON" + "`r`n"
+    $sp += "`t`t(" + "`r`n"
+
+    # key columns
+    $first = $true
+    $KeyColumns | ForEach {
+        if($first -eq $true) {
+            $sp += "`t`t`t [$_] = [$_]" +"`r`n"
+        } else {
+            $sp += "`t`t`t AND [$_] = [$_]" +"`r`n"
+            $first = $false
+       }
+    }
+
+    $sp += "`t`t)" + "`r`n"
+    $sp += "`t`tWHEN MATCHED THEN " + "`r`n"
+    $sp += "`t`t`tUPDATE SET " + "`r`n"
+    $sp += "  " + "$fieldList_u" + "`r`n"
+    $sp += "`t`tWHEN NOT MATCHED BY TARGET THEN " + "`r`n"
+    $sp += "`t`t`tINSERT($fieldList_s)" + "`r`n"
+    $sp += "`t`t`t`VALUES($fieldList_i)" + "`r`n"
+    $sp += ";" + "`r`n"
+    $sp += "END" + "`r`n"
+    $udType += "GO"
+
+    $fileName = "$OutputPath\Load" +$TargetName+".procedure.sql"
+    $sp | Out-File $fileName
+
+}
+
+<#
+.SYNOPSIS
+	Create T-SQL User Defined Type  script
+
+.DESCRIPTION
+	Create User defined table type
+
+.PARAMETER 
+	Data
+	KeyColumns
+    SourceName
+    TargetName
+    OutputPath
+
+.EXAMPLE
+	 Create-UserDefinedType  -Data -Name ""   -OutputPath ""
+#>
+
+function Create-UserDefinedType 
+{
+   	[CmdletBinding()]
+	Param(
+        [Parameter(Mandatory=$True)][PSObject[]]$Data,
+        [Parameter(Mandatory=$True)][string]$Name,
+        [Parameter(Mandatory=$True)][string]$OutputPath
+	)
+
+    $first = $true
+    $udType = "CREATE TYPE [dbo].[$TableName] AS TABLE ( " + "`r`n"
+
+    $Data | ForEach {
+        if($_.Name -ne $null -and $_.Name -ne "")
+        {
+            if($first -eq $true){
+                $udType +=  "`t`t" + ($_.ColText + "`r`n")
+            } else {
+               $udType +=  "`t`t,"+($_.ColText + "`r`n") 
+            }
+
+            $first = $false
+        }
+    }
+
+    $udType += ")" + "`r`n"
+    $udType += "GO"
+
+    $fileName = "$OutputPath\" +$Name+"Data.Funtion.sql"
+    $udType | Out-File $fileName
+
 }
